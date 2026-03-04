@@ -65,6 +65,13 @@ u/charles2404
 - **Main developers/maintainers**: auri-the-jelly
 - **Source code**: Available at https://github.com/auri-the-jelly/SoundKit_MR.py/releases
 
+### bnktool
+- **License**: MIT License
+- **Description**: Tools for extracting and repacking Wwise .bnk audio files.
+- **Project homepage**: https://github.com/JohnnYoru/BNKTool
+- **Main developers/maintainers**: JohnnYoru
+- **Source code**: Available at https://github.com/JohnnYoru/BNKTool/releases
+
 ## Third-Party Dependencies / Licensing
 
 This tool includes and redistributes the following open-source components:
