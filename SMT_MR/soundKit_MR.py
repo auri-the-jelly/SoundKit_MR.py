@@ -512,11 +512,14 @@ def prepare_custom_wems_for_modding():
     sanitize_input_filenames(output_wem_folder)
     wem_files = collect_files_with_ext(output_wem_folder, ".wem")
     by_id = defaultdict(list)
+    invalid_count = 0
+    duplicate_count = 0
     for wem in wem_files:
         parsed = parse_wem_numeric_id(os.path.basename(wem))
         if parsed is None:
             moved_to = safe_move(wem, os.path.join(script_dir, invalid_name_folder))
             print(f"Moved invalid filename to '{moved_to}'")
+            invalid_count += 1
             continue
         by_id[parsed].append(wem)
 
@@ -529,6 +532,7 @@ def prepare_custom_wems_for_modding():
                 continue
             moved_to = safe_move(item, os.path.join(script_dir, dupe_id_folder))
             print(f"Moved duplicate ID file to '{moved_to}'")
+            duplicate_count += 1
 
     staging = os.path.join(script_dir, extras_folder, "0-TEMP", "normalized-custom-wems")
     if os.path.exists(staging):
@@ -536,7 +540,7 @@ def prepare_custom_wems_for_modding():
     ensure_dir(staging)
     for wem_id, source_file in best_by_id.items():
         shutil.copy2(source_file, os.path.join(staging, f"{wem_id}.wem"))
-    return staging, set(best_by_id.keys())
+    return staging, set(best_by_id.keys()), best_by_id, invalid_count, duplicate_count
 
 
 def pick_primary_extract_root(temp_root: str) -> str:
@@ -940,7 +944,13 @@ def create_modded_bnks():
         print(f"Error: custom WEM size is {total_size_mb} MB (limit is 580 MB).")
         return False
 
-    staging_wems, normalized_ids = prepare_custom_wems_for_modding()
+    (
+        staging_wems,
+        normalized_ids,
+        best_by_id,
+        invalid_count,
+        duplicate_count,
+    ) = prepare_custom_wems_for_modding()
     staged_files = collect_files_with_ext(staging_wems, ".wem")
     if not staged_files:
         print("No valid WEM files remain after sanitization.")
@@ -989,12 +999,16 @@ def create_modded_bnks():
         packed_ok += 1
 
     for wem_id in sorted(normalized_ids - matched_ids):
-        source = os.path.join(staging_wems, f"{wem_id}.wem")
-        if os.path.exists(source):
+        source = best_by_id.get(wem_id)
+        if source and os.path.exists(source):
             moved = safe_move(source, os.path.join(script_dir, no_match_folder))
             print(f"No BNK match for ID {wem_id}; moved to '{moved}'")
 
     print(f"Created {packed_ok}/{len(bnk_files)} modded BNK files.")
+    print(
+        "Sanitization summary: "
+        f"{invalid_count} invalid filename(s), {duplicate_count} duplicate file(s) moved."
+    )
     return packed_ok > 0
 
 
