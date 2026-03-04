@@ -491,11 +491,7 @@ def normalize_bank_stream_ids(bank_streams: str):
             wem_path.rename(target)
 
 
-def apply_cvs_replacements(bank_streams: str, replace_audio: bool):
-    cvs_index = build_cvs_wem_index()
-    if not cvs_index:
-        print(f"Warning: no CVS WEM folder found at '{cvs_renamed_wem_folder}'.")
-        return
+def apply_cvs_replacements(bank_streams: str, replace_audio: bool, cvs_index):
     for wem_file in Path(bank_streams).glob("*.wem"):
         if not wem_file.stem.isdigit():
             continue
@@ -541,6 +537,13 @@ def prepare_custom_wems_for_modding():
     for wem_id, source_file in best_by_id.items():
         shutil.copy2(source_file, os.path.join(staging, f"{wem_id}.wem"))
     return staging, set(best_by_id.keys())
+
+
+def pick_primary_extract_root(temp_root: str) -> str:
+    entries = [entry for entry in os.scandir(temp_root)]
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0].path
+    return temp_root
 
 
 def sanitize_input_filenames(input_folder_path: str) -> list[str]:
@@ -870,7 +873,10 @@ def extract_bnks(name_only: bool = False):
         print(f"No BNK files found in '{original_bnk_folder}'.")
         return False
 
-    ensure_dir(extracted_bnk_folder)
+    ensure_dir(os.path.join(script_dir, extracted_bnk_folder))
+    cvs_index = build_cvs_wem_index()
+    if not cvs_index:
+        print(f"Warning: no CVS WEM folder found at '{cvs_renamed_wem_folder}'.")
     success = 0
     for bnk_file in bnk_files:
         bnk_name = Path(bnk_file).stem
@@ -885,14 +891,16 @@ def extract_bnks(name_only: bool = False):
 
         rename_streams_to_wem(temp_root)
         bank_streams = get_bank_streams_folder(temp_root)
-        if bank_streams:
+        if bank_streams and cvs_index:
             normalize_bank_stream_ids(bank_streams)
-            apply_cvs_replacements(bank_streams, replace_audio=not name_only)
+            apply_cvs_replacements(
+                bank_streams, replace_audio=not name_only, cvs_index=cvs_index
+            )
 
         target_folder = os.path.join(script_dir, extracted_bnk_folder, bnk_name)
         if os.path.exists(target_folder):
             shutil.rmtree(target_folder)
-        shutil.copytree(temp_root, target_folder)
+        shutil.copytree(pick_primary_extract_root(temp_root), target_folder)
         print(f"Extracted '{bnk_file}' -> '{target_folder}'")
         success += 1
 
@@ -916,7 +924,7 @@ def process_bnk_files(bnk_files: list[str] = None, output_folder: str = None):
 
 def create_modded_bnks():
     ensure_essential_folders()
-    ensure_dir(modded_bnk_output)
+    ensure_dir(os.path.join(script_dir, modded_bnk_output))
     bnk_files = collect_files_with_ext(original_bnk_folder, ".bnk")
     if not bnk_files:
         print(f"No BNK files found in '{original_bnk_folder}'.")
