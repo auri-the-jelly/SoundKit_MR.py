@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 import pyfzf
 import re
-from collections import defaultdict
 
 script_dir = os.getcwd()
 
@@ -25,6 +24,10 @@ header_file = os.path.join(tools_folder, "header.bin")
 # Core BNK input/output folders
 original_bnk_folder = "1-Put-ORIGINAL-BNKs-Here"
 modded_bnk_output = "3-Your-MODDED-BNK-Is-Here"
+bnk_extract_output = "4-Your-EXTRACTED-BNKs-Are-Here"
+character_id_list_file = os.path.join(
+    extras_folder, "0-CVS", "1_XTRA", "CHARACTER-ID-LIST.txt"
+)
 
 # Resolved absolute paths
 original_bnk_path = os.path.join(script_dir, original_bnk_folder)
@@ -46,13 +49,8 @@ x107_input_folder = os.path.join(x107_parent, "A-Put-Audio-Files-To-ASSIGN-Here"
 option107_temp_input = os.path.join(input_wav_folder, "Option107-Temp")
 
 # Error / special folders
-error_base_folder = "x200-ERROR-FILEs-Are-Here"
-invalid_name_folder = os.path.join(error_base_folder, "x203-INVALID-NAME-Wems-Here")
-dupe_id_folder = os.path.join(error_base_folder, "x202-DUPE-ID-Wems-Here")
-no_match_folder = os.path.join(error_base_folder, "x204-Wems-With-NO-BNK-MATCH-Here")
+invalid_name_folder = os.path.join(script_dir, "x203-INVALID-NAME-Wems-Here")
 audio_id_list_file = os.path.join(extras_folder, "AUDIO-ID-LIST.txt")
-extracted_bnk_folder = "4-Your-EXTRACTED-BNKs-Are-Here"
-cvs_renamed_wem_folder = os.path.join(extras_folder, "0-CVS", "2-RENAMED-WEMs-Are-Here")
 
 # DEV folders
 dev_root = os.path.join("0_XTRA", "0-DEV")
@@ -67,15 +65,10 @@ ESSENTIAL_FOLDERS = [
     input_wav_folder,
     output_wem_folder,
     modded_bnk_output,
-    extracted_bnk_folder,
     extras_folder,
     ignore_folder,
     tools_folder,
     vgm_sub_folder,
-    error_base_folder,
-    invalid_name_folder,
-    dupe_id_folder,
-    no_match_folder,
     optional_folder,
     test_parent_folder,
     os.path.join(test_parent_folder, "A-Put-Wems-To-TEST-Here"),
@@ -278,55 +271,35 @@ STEREO_HEADER = bytes(
 
 
 def main():
-    ensure_essential_folders()
     fzf = pyfzf.FzfPrompt()
-    while True:
-        options = [
-            "0. Convert custom audio files to WEM format",
-            "1. BNK tools (1-1 create, 1-2 extract+replace, 1-3 extract+rename)",
-            "q. Quit",
-        ]
-        options_prompt = fzf.prompt(options, "--cycle --layout reverse")
-        if not options_prompt:
-            print("Exiting...")
-            return
-        selected = options_prompt[0]
-        if selected.startswith("0."):
-            convert_wav_to_wem()
-        elif selected.startswith("1."):
-            run_option_1_menu(fzf)
-        else:
-            print("Exiting...")
-            return
+    options = [
+        "0. Convert custom audio files to WEM format",
+        "1. Create a modded .bnk",
+        "2. Extract .bnk",
+        "3. Update .wem IDs",
+        "4. Quit",
+    ]
+    options_prompt = fzf.prompt(options, "--cycle --layout reverse")
+    if not options_prompt or options_prompt[0] == "4. Quit":
+        print("Exiting...")
+        return
+    selected_option = options_prompt[0][0]  # Get the first character
+    if selected_option == "0":
+        convert_wav_to_wem()
+    elif selected_option == "1":
+        create_modded_bnks()
+    elif selected_option == "2":
+        extract_bnks()
+    elif selected_option == "3":
+        get_audio_id_list()
+    else:
+        print("Invalid option. Exiting...")
 
 
 def ensure_dir(path: str):
     if os.path.exists(path):
         return
     os.makedirs(path)
-
-
-def ensure_essential_folders():
-    for rel_path in ESSENTIAL_FOLDERS:
-        ensure_dir(os.path.join(script_dir, rel_path))
-
-
-def run_option_1_menu(fzf: pyfzf.FzfPrompt):
-    submenu = [
-        "1-1. Create modded BNKs",
-        "1-2. Extract BNKs (audio + names from CVS)",
-        "1-3. Extract BNKs (name-only from CVS)",
-        "Back",
-    ]
-    choice = fzf.prompt(submenu, "--cycle --layout reverse")
-    if not choice or choice[0] == "Back":
-        return
-    if choice[0].startswith("1-1"):
-        create_modded_bnks()
-    elif choice[0].startswith("1-2"):
-        extract_bnks(name_only=False)
-    elif choice[0].startswith("1-3"):
-        extract_bnks(name_only=True)
 
 
 def run_wwiseutil(
@@ -371,8 +344,8 @@ def run_wwiseutil(
 
 def run_bnktool(
     bnk_input: str,
-    bnk_output: str = None,
-    wem_output: str = None,
+    bnk_output: str,
+    wem_output: str,
     extract: bool = False,
     pack: bool = False,
 ) -> bool:
@@ -385,12 +358,6 @@ def run_bnktool(
         )  # TODO: CHANGE ASAP
     if not os.path.isfile(bnktool_path):
         print(f"Error: bnktool not found at {bnktool_path}")
-        return False
-    if extract and not wem_output:
-        print("Error: extract mode requires wem_output.")
-        return False
-    if pack and (not wem_output or not bnk_output):
-        print("Error: pack mode requires wem_output and bnk_output.")
         return False
     args = [bnktool_path]
     if extract:
@@ -408,146 +375,6 @@ def run_bnktool(
         print(f"Error running bnktool: {log.stderr}")
         return False
     return True
-
-
-def collect_files_with_ext(root: str, ext: str) -> list[str]:
-    found = []
-    for path_root, _, files in os.walk(root):
-        for file_name in files:
-            if file_name.lower().endswith(ext.lower()):
-                found.append(os.path.join(path_root, file_name))
-    return found
-
-
-def safe_move(src: str, dst_dir: str):
-    ensure_dir(dst_dir)
-    dst = os.path.join(dst_dir, os.path.basename(src))
-    stem, ext = os.path.splitext(os.path.basename(src))
-    i = 1
-    while os.path.exists(dst):
-        dst = os.path.join(dst_dir, f"{stem}_{i}{ext}")
-        i += 1
-    shutil.move(src, dst)
-    return dst
-
-
-def parse_wem_numeric_id(file_name: str):
-    match = re.match(r"^([0-9a-fA-F]+)(?:-.*)?\.wem$", file_name, flags=re.IGNORECASE)
-    if not match:
-        return None
-    return convert_hex_to_dec(match.group(1))
-
-
-def build_cvs_wem_index():
-    index = defaultdict(list)
-    if not os.path.isdir(cvs_renamed_wem_folder):
-        return index
-    for file_path in collect_files_with_ext(cvs_renamed_wem_folder, ".wem"):
-        base = os.path.basename(file_path)
-        match = re.match(r"^(\d+)(?:-.*)?\.wem$", base, flags=re.IGNORECASE)
-        if match:
-            index[int(match.group(1))].append(file_path)
-    return index
-
-
-def choose_best_name(candidates: list[str]) -> str:
-    longest = max(candidates, key=lambda p: len(os.path.splitext(os.path.basename(p))[0]))
-    longest_len = len(os.path.splitext(os.path.basename(longest))[0])
-    tied = [p for p in candidates if len(os.path.splitext(os.path.basename(p))[0]) == longest_len]
-    for item in tied:
-        if "English(US)" in item:
-            return os.path.basename(item)
-    return os.path.basename(longest)
-
-
-def get_bank_streams_folder(extract_root: str):
-    matches = list(Path(extract_root).rglob("bank_streams"))
-    if matches:
-        return str(matches[0])
-    return None
-
-
-def rename_streams_to_wem(extract_root: str):
-    for file_path in Path(extract_root).rglob("*.stream"):
-        file_path.rename(file_path.with_suffix(".wem"))
-
-
-def normalize_bank_stream_ids(bank_streams: str):
-    for wem_path in Path(bank_streams).glob("*.wem"):
-        stem = wem_path.stem
-        dec = convert_hex_to_dec(stem)
-        if dec is None:
-            continue
-        target = wem_path.with_name(f"{dec}.wem")
-        if target == wem_path:
-            continue
-        if target.exists():
-            if target.stat().st_size >= wem_path.stat().st_size:
-                wem_path.unlink()
-            else:
-                target.unlink()
-                wem_path.rename(target)
-        else:
-            wem_path.rename(target)
-
-
-def apply_cvs_replacements(bank_streams: str, replace_audio: bool, cvs_index):
-    for wem_file in Path(bank_streams).glob("*.wem"):
-        if not wem_file.stem.isdigit():
-            continue
-        wem_id = int(wem_file.stem)
-        candidates = cvs_index.get(wem_id)
-        if not candidates:
-            continue
-        if replace_audio:
-            biggest = max(candidates, key=lambda p: os.path.getsize(p))
-            shutil.copy2(biggest, str(wem_file))
-        desired_name = choose_best_name(candidates)
-        desired_path = wem_file.with_name(desired_name)
-        if desired_path != wem_file and not desired_path.exists():
-            wem_file.rename(desired_path)
-
-
-def prepare_custom_wems_for_modding():
-    sanitize_input_filenames(output_wem_folder)
-    wem_files = collect_files_with_ext(output_wem_folder, ".wem")
-    by_id = defaultdict(list)
-    invalid_count = 0
-    duplicate_count = 0
-    for wem in wem_files:
-        parsed = parse_wem_numeric_id(os.path.basename(wem))
-        if parsed is None:
-            moved_to = safe_move(wem, os.path.join(script_dir, invalid_name_folder))
-            print(f"Moved invalid filename to '{moved_to}'")
-            invalid_count += 1
-            continue
-        by_id[parsed].append(wem)
-
-    best_by_id = {}
-    for wem_id, files in by_id.items():
-        best = max(files, key=os.path.getsize)
-        best_by_id[wem_id] = best
-        for item in files:
-            if item == best:
-                continue
-            moved_to = safe_move(item, os.path.join(script_dir, dupe_id_folder))
-            print(f"Moved duplicate ID file to '{moved_to}'")
-            duplicate_count += 1
-
-    staging = os.path.join(script_dir, extras_folder, "0-TEMP", "normalized-custom-wems")
-    if os.path.exists(staging):
-        shutil.rmtree(staging)
-    ensure_dir(staging)
-    for wem_id, source_file in best_by_id.items():
-        shutil.copy2(source_file, os.path.join(staging, f"{wem_id}.wem"))
-    return staging, set(best_by_id.keys()), best_by_id, invalid_count, duplicate_count
-
-
-def pick_primary_extract_root(temp_root: str) -> str:
-    entries = [entry for entry in os.scandir(temp_root)]
-    if len(entries) == 1 and entries[0].is_dir():
-        return entries[0].path
-    return temp_root
 
 
 def sanitize_input_filenames(input_folder_path: str) -> list[str]:
@@ -654,7 +481,9 @@ def convert_wav_to_wem() -> bool:
             if ext.lower() in SUPPORTED_AUDIO_EXTENSIONS:
                 files.append(os.path.join(root, name))
 
-    renamed_log = sanitize_input_filenames(input_wav_folder)
+    renamed_log = []
+    for file in files:
+        renamed_log = sanitize_input_filenames(file)
     sanitized_count = len(renamed_log)
     if sanitized_count > 0:
         print(f"Sanitized {sanitized_count} filenames.")
@@ -870,46 +699,310 @@ def convert_wav_to_wem() -> bool:
     return True
 
 
-def extract_bnks(name_only: bool = False):
-    ensure_essential_folders()
-    bnk_files = collect_files_with_ext(original_bnk_folder, ".bnk")
+def extract_bnks():
+    print("Operation 2: Extracting .wem files from vanilla .bnk files...")
+    ensure_dir(tools_folder)
+    ensure_dir(bnk_extract_output)
+
+    bnk_files = [
+        os.path.join(original_bnk_folder, file)
+        for file in os.listdir(original_bnk_folder)
+        if file.lower().endswith(".bnk")
+    ]
     if not bnk_files:
-        print(f"No BNK files found in '{original_bnk_folder}'.")
-        return False
+        print(
+            f"No BNK files found in {original_bnk_folder}. Please add BNK files to process."
+        )
+        return
 
-    ensure_dir(os.path.join(script_dir, extracted_bnk_folder))
-    cvs_index = build_cvs_wem_index()
-    if not cvs_index:
-        print(f"Warning: no CVS WEM folder found at '{cvs_renamed_wem_folder}'.")
-    success = 0
-    for bnk_file in bnk_files:
-        bnk_name = Path(bnk_file).stem
-        temp_root = os.path.join(script_dir, extras_folder, "0-TEMP", "extract", bnk_name)
-        if os.path.exists(temp_root):
-            shutil.rmtree(temp_root)
-        ensure_dir(temp_root)
+    sound_banks_file = os.path.join(tools_folder, "sound_banks.txt")
+    for stale in (sound_banks_file, os.path.join(tools_folder, "soundbanks.txt")):
+        if os.path.exists(stale):
+            os.remove(stale)
 
-        if not run_bnktool(bnk_input=bnk_file, wem_output=temp_root, extract=True):
-            print(f"Failed extracting '{bnk_file}'")
+    with open(sound_banks_file, "w", encoding="utf-8") as fp:
+        for bnk_file in bnk_files:
+            bnk_name = os.path.basename(bnk_file)
+            fp.write(f"{os.path.splitext(bnk_name)[0]}\n")
+            shutil.copy2(bnk_file, os.path.join(tools_folder, bnk_name))
+            print(f"Copied {bnk_name} to '{tools_folder}'")
+
+            folder_to_delete = os.path.join(tools_folder, os.path.splitext(bnk_name)[0])
+            if os.path.isdir(folder_to_delete):
+                shutil.rmtree(folder_to_delete)
+                print(f"Deleted stale extraction folder: '{folder_to_delete}'")
+
+    bnktool_output = run_bnktool(
+        tools_folder, modded_bnk_output, tools_folder, extract=True
+    )
+    if not bnktool_output:
+        print("Failed to extract BNK files.")
+        return
+    print(f"Successfully extracted BNK files to {tools_folder}")
+
+    for folder in Path(tools_folder).iterdir():
+        if not folder.is_dir():
+            continue
+        for stream_file in folder.rglob("*.stream"):
+            wem_path = stream_file.with_suffix(".wem")
+            stream_file.rename(wem_path)
+            print(f"Renamed {stream_file.name} -> {wem_path.name}")
+
+    bank_streams_folders = [
+        folder
+        for folder in Path(tools_folder).rglob("*")
+        if folder.is_dir() and folder.name == "bank_streams"
+    ]
+    for bank_streams in bank_streams_folders:
+        for wem_file in bank_streams.glob("*.wem"):
+            base = wem_file.stem
+            if not re.fullmatch(r"[a-fA-F0-9]+", base):
+                continue
+            if re.fullmatch(r"[0-9]+", base):
+                print(
+                    f"Skipping {wem_file.name} in {bank_streams} due to non-hexadecimal name"
+                )
+                continue
+            try:
+                decimal = str(int(base, 16))
+                new_path = bank_streams / f"{decimal}.wem"
+                wem_file.rename(new_path)
+                print(f"Renamed {base}.wem -> {decimal}.wem")
+            except ValueError as exc:
+                print(f"Failed to convert {wem_file.name}: {exc}")
+
+    for folder in Path(tools_folder).iterdir():
+        if not folder.is_dir():
+            continue
+        if folder.name in {"Output", modded_bnk_output, "BNKTool"}:
+            continue
+        dest = Path(bnk_extract_output) / folder.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.move(str(folder), str(dest))
+        print(f"Moved: {folder.name}")
+
+    for file in Path(tools_folder).iterdir():
+        if file.is_file() and (
+            file.suffix.lower() in {".wem", ".bnk"}
+            or file.name in {"sound_banks.txt", "soundbanks.txt"}
+        ):
+            file.unlink()
+            print(f"Deleted {file.name} from '{tools_folder}'")
+
+    for folder in Path(tools_folder).iterdir():
+        if folder.is_dir() and folder.name not in {
+            "Output",
+            modded_bnk_output,
+            "BNKTool",
+        }:
+            shutil.rmtree(folder)
+            print(f"Deleted folder: '{folder.name}' from '{tools_folder}'")
+
+    operation_11_smart_replace_and_organize(
+        extracted_folder=bnk_extract_output, bnk_files=bnk_files
+    )
+    rename_extracted_folders_with_character_ids(bnk_extract_output)
+    print("Operation 2 completed.")
+
+
+def rename_extracted_folders_with_character_ids(extracted_folder: str):
+    print("Renaming extracted folders with CHARACTER-ID-LIST mappings...")
+    char_id_map = load_character_id_list()
+    if not char_id_map:
+        print("No character mappings loaded. Skipping friendly rename.")
+        return
+
+    root = Path(extracted_folder)
+    if not root.is_dir():
+        return
+
+    for folder in [entry for entry in root.iterdir() if entry.is_dir()]:
+        original_name = folder.name
+
+        if re.search(r"_Old\d+$", original_name):
             continue
 
-        rename_streams_to_wem(temp_root)
-        bank_streams = get_bank_streams_folder(temp_root)
-        if bank_streams and cvs_index:
-            normalize_bank_stream_ids(bank_streams)
-            apply_cvs_replacements(
-                bank_streams, replace_audio=not name_only, cvs_index=cvs_index
+        already_prefixed = any(
+            original_name.startswith(f"{char_name}-")
+            for char_name in char_id_map.values()
+        )
+        if already_prefixed:
+            continue
+
+        desired_name = original_name
+        id_match = re.search(r"(\d{7})", original_name)
+        if id_match:
+            folder_id = id_match.group(1)
+            if folder_id in char_id_map:
+                desired_name = f"{char_id_map[folder_id]}-{original_name}"
+
+        desired_path = root / desired_name
+        if desired_path.exists() and desired_path != folder:
+            counter = 1
+            archive_path = root / f"{desired_name}_Old{counter}"
+            while archive_path.exists():
+                counter += 1
+                archive_path = root / f"{desired_name}_Old{counter}"
+            desired_path.rename(archive_path)
+            print(f"Archived conflicting folder: {desired_name} -> {archive_path.name}")
+
+        if desired_name != original_name:
+            folder.rename(root / desired_name)
+            print(f"Renamed: {original_name} -> {desired_name}")
+
+
+def operation_11_smart_replace_and_organize(
+    extracted_folder: str, bnk_files: list[str] = None
+) -> dict[str, int]:
+    print("Operation 11: Smart replacing and organizing .wem files...")
+
+    base_wems_folder = os.path.join(extras_folder, "0-CVS", "2-RENAMED-WEMs-Are-Here")
+    if not os.path.isdir(base_wems_folder):
+        print(f"Error: '{base_wems_folder}' not found. Skipping replacement.")
+        return {"replaced": 0, "renamed": 0, "skipped": 0, "moved": 0}
+
+    if bnk_files:
+        bnk_stems = {
+            os.path.splitext(os.path.basename(bnk_file))[0] for bnk_file in bnk_files
+        }
+    else:
+        bnk_stems = {
+            os.path.splitext(file)[0]
+            for file in os.listdir(original_bnk_folder)
+            if file.lower().endswith(".bnk")
+        }
+
+    if not os.path.isdir(extracted_folder):
+        print(f"Extracted folder not found: {extracted_folder}")
+        return {"replaced": 0, "renamed": 0, "skipped": 0, "moved": 0}
+
+    bnk_folders = [
+        entry
+        for entry in Path(extracted_folder).iterdir()
+        if entry.is_dir() and entry.name in bnk_stems
+    ]
+
+    wem_index: dict[str, list[Path]] = {}
+    for wem_file in Path(base_wems_folder).rglob("*.wem"):
+        match = re.match(r"^(\d+)(?:-.*)?$", wem_file.stem)
+        if not match:
+            continue
+        wem_id = match.group(1)
+        wem_index.setdefault(wem_id, []).append(wem_file)
+
+    replaced_count = 0
+    renamed_count = 0
+    skipped_count = 0
+    moved_count = 0
+
+    for bnk_folder in bnk_folders:
+        bank_streams = bnk_folder / "bank_streams"
+        if not bank_streams.is_dir():
+            continue
+
+        wem_files = [
+            wem for wem in bank_streams.glob("*.wem") if re.fullmatch(r"\d+", wem.stem)
+        ]
+
+        for wem in wem_files:
+            wem_id = wem.stem
+            candidates = wem_index.get(wem_id)
+            if not candidates:
+                skipped_count += 1
+                print(f"Skipped (no match in CVS): {wem.name}")
+                continue
+
+            best_by_size = max(
+                candidates, key=lambda candidate: candidate.stat().st_size
+            )
+            shutil.copy2(best_by_size, wem)
+            replaced_count += 1
+            print(
+                f"Replaced content of {wem.name} <- {best_by_size.name} "
+                f"({best_by_size.stat().st_size} bytes)"
             )
 
-        target_folder = os.path.join(script_dir, extracted_bnk_folder, bnk_name)
-        if os.path.exists(target_folder):
-            shutil.rmtree(target_folder)
-        shutil.copytree(pick_primary_extract_root(temp_root), target_folder)
-        print(f"Extracted '{bnk_file}' -> '{target_folder}'")
-        success += 1
+            longest_name_candidate = max(
+                candidates, key=lambda candidate: len(candidate.stem)
+            )
+            en_us_candidates = [
+                candidate
+                for candidate in candidates
+                if "English(US)" in str(candidate.parent)
+                and len(candidate.stem) == len(longest_name_candidate.stem)
+            ]
+            if en_us_candidates and "English(US)" not in str(
+                longest_name_candidate.parent
+            ):
+                longest_name_candidate = en_us_candidates[0]
 
-    print(f"Completed extraction for {success}/{len(bnk_files)} BNK files.")
-    return success > 0
+            desired_name = longest_name_candidate.name
+            desired_path = bank_streams / desired_name
+            if desired_name != wem.name and not desired_path.exists():
+                wem.rename(desired_path)
+                renamed_count += 1
+                print(f"Renamed: {wem.name} -> {desired_name} (longest name)")
+            elif desired_name != wem.name:
+                print(f"Skipped rename {wem.name} -> {desired_name} (name conflict)")
+
+        all_wems = list(bank_streams.rglob("*.wem"))
+        for wem in all_wems:
+            parts = wem.stem.split("_")
+            sub_folder = parts[2] if len(parts) >= 3 else "Unknown"
+            sub_path = bank_streams / sub_folder
+            sub_path.mkdir(parents=True, exist_ok=True)
+
+            dest = sub_path / wem.name
+            if wem.resolve() == dest.resolve():
+                continue
+
+            if dest.exists():
+                dest.unlink()
+            shutil.move(str(wem), str(dest))
+            moved_count += 1
+            print(f"Moved: {wem.name} -> {sub_folder}/")
+
+    print("========================================")
+    print("Operation 11 Summary (updated logic)")
+    print("========================================")
+    print(f"Replaced content (largest file): {replaced_count}")
+    print(f"Renamed to longest name     : {renamed_count}")
+    print(f"Skipped (no match/conflict) : {skipped_count}")
+    print(f"Organized into subfolders   : {moved_count}")
+    print("========================================")
+
+    return {
+        "replaced": replaced_count,
+        "renamed": renamed_count,
+        "skipped": skipped_count,
+        "moved": moved_count,
+    }
+
+
+def load_character_id_list():
+    character_id_map = {}
+    if not os.path.isfile(character_id_list_file):
+        return character_id_map
+    with open(character_id_list_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^(\d{7})\s*:\s*(.+)$", line)
+            if match:
+                char_id = match.group(1)
+                char_name = re.sub(r'[<>:"/\\|?*]', "_", match.group(2).strip())
+                character_id_map[char_id] = char_name
+                continue
+            reverse_match = re.match(r"^(.+)\s*:\s*(\d{7})$", line)
+            if reverse_match:
+                char_name = re.sub(r'[<>:"/\\|?*]', "_", reverse_match.group(1).strip())
+                char_id = reverse_match.group(2)
+                character_id_map[char_id] = char_name
+                continue
+            print(f"Skipping invalid line in character ID list: {line}")
+    return character_id_map
 
 
 def process_test_files():
@@ -923,93 +1016,130 @@ def isolate_custom_wems():
 
 
 def process_bnk_files(bnk_files: list[str] = None, output_folder: str = None):
-    return extract_bnks(name_only=False)
+    pass
 
 
 def create_modded_bnks():
-    ensure_essential_folders()
-    ensure_dir(os.path.join(script_dir, modded_bnk_output))
-    bnk_files = collect_files_with_ext(original_bnk_folder, ".bnk")
+    ensure_dir(tools_folder)
+    bnk_files = []
+    for root, _, files in os.walk(original_bnk_folder):
+        for file in files:
+            if file.lower().endswith(".bnk"):
+                bnk_files.append(os.path.join(root, file))
     if not bnk_files:
-        print(f"No BNK files found in '{original_bnk_folder}'.")
-        return False
+        print(
+            f"No BNK files found in {original_bnk_folder}. Please add BNK files to process."
+        )
+        return
 
-    custom_wems = collect_files_with_ext(output_wem_folder, ".wem")
-    if not custom_wems:
-        print(f"No WEM files found in '{output_wem_folder}'.")
-        return False
+    wem_files = []
+    for root, _, files in os.walk(output_wem_folder):
+        for file in files:
+            if file.lower().endswith(".wem"):
+                wem_files.append(os.path.join(root, file))
+    if not wem_files:
+        print(
+            f"No WEM files found in {output_wem_folder}. Please convert WAV files to WEM first."
+        )
+        return
 
-    total_size_mb = round(sum(os.path.getsize(w) for w in custom_wems) / (1024 * 1024), 2)
-    if total_size_mb > 580:
-        print(f"Error: custom WEM size is {total_size_mb} MB (limit is 580 MB).")
-        return False
+    sanitized_log = sanitize_input_filenames(output_wem_folder)
 
-    (
-        staging_wems,
-        normalized_ids,
-        best_by_id,
-        invalid_count,
-        duplicate_count,
-    ) = prepare_custom_wems_for_modding()
-    staged_files = collect_files_with_ext(staging_wems, ".wem")
-    if not staged_files:
-        print("No valid WEM files remain after sanitization.")
-        return False
+    if not os.listdir(output_wem_folder):
+        print(
+            "No valid WEM files found in output folder after sanitization. Please check your files."
+        )
+        return
 
-    matched_ids = set()
-    packed_ok = 0
+    for file in os.listdir(output_wem_folder):
+        decimal_id = convert_hex_to_dec(os.path.splitext(file)[0])
+        if decimal_id is None:
+            print(f"Skipping file with invalid name (not hex or decimal): {file}")
+            continue
+        else:
+            print(f"File {file} has valid ID: {decimal_id}")
+            os.rename(
+                os.path.join(output_wem_folder, file),
+                os.path.join(output_wem_folder, f"{decimal_id}.wem"),
+            )
+    sanitized_filenames = [
+        f for f in os.listdir(output_wem_folder) if f.endswith(".wem")
+    ]
+
     for bnk_file in bnk_files:
-        bnk_name = Path(bnk_file).stem
-        temp_root = os.path.join(script_dir, extras_folder, "0-TEMP", "pack", bnk_name)
-        if os.path.exists(temp_root):
-            shutil.rmtree(temp_root)
-        ensure_dir(temp_root)
+        bnk_output = modded_bnk_output
+        bnk_input = original_bnk_folder
+        wem_output = os.path.join(extras_folder, "0-TEMP")
+        wem_input = output_wem_folder
 
-        if not run_bnktool(bnk_input=bnk_file, wem_output=temp_root, extract=True):
-            print(f"Failed extracting '{bnk_file}'")
+        bnktool_output = run_bnktool(bnk_input, bnk_output, wem_output, extract=True)
+
+        if not bnktool_output:
+            print(f"Failed to extract WEMs from {bnk_file}. Skipping this BNK.")
             continue
+        for file in sanitized_filenames:
+            wem_path = os.path.join(output_wem_folder, file)
+            try:
+                wem_id = int(os.path.splitext(file)[0])
+                print(f"Processing WEM: {file} with ID {wem_id}")
+                vanilla_wems = os.listdir(
+                    os.path.join(
+                        wem_output,
+                        os.path.basename(bnk_file).replace(".bnk", ""),
+                        "bank_streams",
+                    )
+                )
+                if f"{wem_id}.wem" in vanilla_wems:
+                    print(
+                        f"Found matching WEM ID {wem_id} in extracted BNK. Replacing with {file}."
+                    )
+                    shutil.copy(
+                        wem_path,
+                        os.path.join(
+                            wem_output,
+                            os.path.basename(bnk_file).replace(".bnk", ""),
+                            "bank_streams",
+                            f"{wem_id}.wem",
+                        ),
+                    )
+            except Exception as e:
+                print(f"Error processing WEM {file}: {e}")
+                continue
 
-        rename_streams_to_wem(temp_root)
-        bank_streams = get_bank_streams_folder(temp_root)
-        if not bank_streams:
-            print(f"No 'bank_streams' found for '{bnk_file}'")
+        bnktool_output = run_bnktool(bnk_input, bnk_output, wem_output, pack=True)
+        if not bnktool_output:
+            print(f"Failed to pack WEMs into BNK for {bnk_file}. Skipping this BNK.")
             continue
-        normalize_bank_stream_ids(bank_streams)
-
-        bank_files = {p.name for p in Path(bank_streams).glob("*.wem")}
-        replaced = 0
-        for staged in staged_files:
-            wem_id = int(Path(staged).stem)
-            target = os.path.join(bank_streams, f"{wem_id}.wem")
-            if f"{wem_id}.wem" in bank_files:
-                shutil.copy2(staged, target)
-                matched_ids.add(wem_id)
-                replaced += 1
-
-        output_bnk = os.path.join(modded_bnk_output, os.path.basename(bnk_file))
-        if not run_bnktool(
-            bnk_input=bnk_file,
-            bnk_output=output_bnk,
-            wem_output=temp_root,
-            pack=True,
-        ):
-            print(f"Failed repacking '{bnk_file}'")
-            continue
-        print(f"Packed '{output_bnk}' with {replaced} replaced WEM(s)")
-        packed_ok += 1
-
-    for wem_id in sorted(normalized_ids - matched_ids):
-        source = best_by_id.get(wem_id)
-        if source and os.path.exists(source):
-            moved = safe_move(source, os.path.join(script_dir, no_match_folder))
-            print(f"No BNK match for ID {wem_id}; moved to '{moved}'")
-
-    print(f"Created {packed_ok}/{len(bnk_files)} modded BNK files.")
-    print(
-        "Sanitization summary: "
-        f"{invalid_count} invalid filename(s), {duplicate_count} duplicate file(s) moved."
-    )
-    return packed_ok > 0
+        print(f"Successfully created modded BNK for {bnk_file}")
+        return True
+        # output_path = modded_bnk_output
+        # entries = find_audio_id_and_index(bnk_file)
+        # for wem in sanitized_filenames:
+        #     wem_path = os.path.join(output_wem_folder, wem)
+        #     try:
+        #         wem_id = int(os.path.splitext(wem)[0])
+        #         wem_index = (
+        #             entries.index(wem_id) + 1
+        #         )  # +1 because entries is 0-indexed but we want 1-indexed
+        #         print(f"Found match for {wem_id} in {bnk_file} at index {wem_index}")
+        #         shutil.copy(
+        #             wem_path, os.path.join(output_wem_folder, str(wem_index) + ".wem")
+        #         )
+        #     except ValueError:
+        #         print(f"No match for {wem} in {bnk_file}. Skipping this WEM.")
+        #         continue
+        # if run_wwiseutil(
+        #     os.path.join(original_bnk_folder, os.path.basename(bnk_file)),
+        #     os.path.join(modded_bnk_output, os.path.basename(bnk_file)),
+        #     replace=True,
+        #     target=output_wem_folder,
+        #     unpack=False,
+        # ):
+        #     print(f"Successfully created modded BNK for {bnk_file}")
+        #     return True
+        # else:
+        #     print(f"Failed to create modded BNK for {bnk_file}")
+        #     return False
 
 
 def get_audio_id_list():
